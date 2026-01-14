@@ -18,8 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        architecture: [ amd64 ]
-        distribution: [ bookworm ]
+        architecture: [ armhf, arm64, amd64 ]
+        distribution: [ bookworm, trixie ]
     permissions:
       contents: write
       discussions: write
