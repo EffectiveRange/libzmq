@@ -1,11 +1,12 @@
 # CMake build script for ZeroMQ
-project(ZeroMQ)
 
-if(${CMAKE_SYSTEM_NAME} STREQUAL Darwin)
-  cmake_minimum_required(VERSION 3.0.2)
+if(${CMAKE_HOST_SYSTEM_NAME} STREQUAL Darwin)
+  cmake_minimum_required(VERSION 3.0.2...3.31)
 else()
-  cmake_minimum_required(VERSION 2.8.12)
+  cmake_minimum_required(VERSION 2.8.12...3.31)
 endif()
+
+project(ZeroMQ)
 
 include(CheckIncludeFiles)
 include(CheckCCompilerFlag)
@@ -122,7 +123,7 @@ if (NOT MSVC)
   if(NOT CMAKE_C_FLAGS MATCHES "-std=" AND NOT C_STANDARD AND NOT CMAKE_C_STANDARD)
     check_c_compiler_flag("-std=c11" COMPILER_SUPPORTS_C11)
     if(COMPILER_SUPPORTS_C11)
-      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c11")
+      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_DEFAULT_SOURCE -std=c11")
     else()
       set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99")
     endif()
@@ -234,7 +235,7 @@ if(NOT ZMQ_USE_GNUTLS)
       endif()
     endif()
   endif()
-  if(NOT ZMQ_USE_NSS)
+  if(ENABLE_WS AND NOT ZMQ_USE_NSS)
     list(APPEND sources ${CMAKE_CURRENT_SOURCE_DIR}/external/sha1/sha1.c
          ${CMAKE_CURRENT_SOURCE_DIR}/external/sha1/sha1.h)
     message(STATUS "Using builtin sha1")
@@ -258,12 +259,13 @@ endif()
 # Select curve encryption library, defaults to disabled To use libsodium instead, use --with-libsodium(must be
 # installed) To disable curve, use --disable-curve
 
-option(WITH_LIBSODIUM "Use libsodium" OFF)
+option(WITH_LIBSODIUM "Use libsodium (required with ENABLE_CURVE)" OFF)
 option(WITH_LIBSODIUM_STATIC "Use static libsodium library" OFF)
 option(ENABLE_LIBSODIUM_RANDOMBYTES_CLOSE "Automatically close libsodium randombytes. Not threadsafe without getrandom()" ON)
 option(ENABLE_CURVE "Enable CURVE security" OFF)
 
 if(ENABLE_CURVE)
+  # libsodium is currently the only CURVE provider
   if(WITH_LIBSODIUM)
     find_package("sodium")
     if(SODIUM_FOUND)
@@ -280,14 +282,29 @@ if(ENABLE_CURVE)
       endif()
     else()
       message(
-        ERROR
-          "libsodium not installed, you may want to install libsodium and run cmake again"
+        FATAL_ERROR
+          "libsodium requested but not found, you may want to install libsodium and run cmake again"
       )
     endif()
+  else() # WITH_LIBSODIUM
+    message(
+      FATAL_ERROR
+      "ENABLE_CURVE set, but not WITH_LIBSODIUM. No CURVE provider found."
+      )
   endif()
-else()
+else() # ENABLE_CURVE
   message(STATUS "CURVE security is disabled")
 endif()
+
+option(WITH_GSSAPI_KRB5 "Use libgssapi_krb5" OFF)
+if(WITH_GSSAPI_KRB5)
+  find_package("gssapi_krb5" REQUIRED)
+  message(STATUS "Using GSSAPI_KRB5")
+  include_directories(${GSSAPI_KRB5_INCLUDE_DIRS})
+  link_directories(${GSSAPI_KRB5_LIBRARY_DIRS})
+  set(HAVE_LIBGSSAPI_KRB5 1)
+endif()
+
 
 set(SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
@@ -380,7 +397,7 @@ endif(WIN32)
 
 if(NOT MSVC)
   if(POLLER STREQUAL "")
-    check_cxx_symbol_exists(kqueue sys/event.h HAVE_KQUEUE)
+    check_cxx_symbol_exists(kqueue "sys/types.h;sys/event.h;sys/time.h" HAVE_KQUEUE)
     if(HAVE_KQUEUE)
       set(POLLER "kqueue")
     endif()
@@ -476,7 +493,7 @@ execute_process(
 if(CACHELINE_SIZE STREQUAL ""
    OR CACHELINE_SIZE EQUAL 0
    OR CACHELINE_SIZE EQUAL -1
-   OR CACHELINE_SIZE EQUAL "undefined")
+   OR CACHELINE_SIZE STREQUAL "undefined")
   set(ZMQ_CACHELINE_SIZE 64)
 else()
   set(ZMQ_CACHELINE_SIZE ${CACHELINE_SIZE})
@@ -551,12 +568,18 @@ if(ZMQ_HAVE_WINDOWS)
   # Cannot use check_library_exists because the symbol is always declared as char(*)(void)
   set(CMAKE_REQUIRED_LIBRARIES "ws2_32.lib")
   check_cxx_symbol_exists(WSAStartup "winsock2.h" HAVE_WS2_32)
+  if(HAVE_WS2_32)
+    set(pkg_config_libs_private "${pkg_config_libs_private} -lws2_32")
+  endif()
 
   set(CMAKE_REQUIRED_LIBRARIES "rpcrt4.lib")
   check_cxx_symbol_exists(UuidCreateSequential "rpc.h" HAVE_RPCRT4)
 
   set(CMAKE_REQUIRED_LIBRARIES "iphlpapi.lib")
   check_cxx_symbol_exists(GetAdaptersAddresses "winsock2.h;iphlpapi.h" HAVE_IPHLAPI)
+  if(HAVE_IPHLAPI)
+    set(pkg_config_libs_private "${pkg_config_libs_private} -liphlpapi")
+  endif()
   check_cxx_symbol_exists(if_nametoindex "iphlpapi.h" HAVE_IF_NAMETOINDEX)
 
   set(CMAKE_REQUIRED_LIBRARIES "")
@@ -573,6 +596,12 @@ if(NOT MINGW)
   find_library(RT_LIBRARY rt)
   if(RT_LIBRARY)
     set(pkg_config_libs_private "${pkg_config_libs_private} -lrt")
+
+    set(CMAKE_REQUIRED_LIBRARIES rt)
+    check_cxx_symbol_exists(clock_gettime time.h HAVE_CLOCK_GETTIME)
+    set(CMAKE_REQUIRED_LIBRARIES)
+  else()
+    check_cxx_symbol_exists(clock_gettime time.h HAVE_CLOCK_GETTIME)
   endif()
 endif()
 
@@ -593,13 +622,9 @@ if(WIN32 AND NOT CYGWIN)
 endif()
 
 if(NOT MSVC)
-  set(CMAKE_REQUIRED_LIBRARIES rt)
-  check_cxx_symbol_exists(clock_gettime time.h HAVE_CLOCK_GETTIME)
-  set(CMAKE_REQUIRED_LIBRARIES)
-
   check_cxx_symbol_exists(fork unistd.h HAVE_FORK)
   check_cxx_symbol_exists(gethrtime sys/time.h HAVE_GETHRTIME)
-  check_cxx_symbol_exists(mkdtemp stdlib.h HAVE_MKDTEMP)
+  check_cxx_symbol_exists(mkdtemp "stdlib.h;unistd.h" HAVE_MKDTEMP)
   check_cxx_symbol_exists(accept4 sys/socket.h HAVE_ACCEPT4)
   check_cxx_symbol_exists(strnlen string.h HAVE_STRNLEN)
 else()
@@ -689,7 +714,7 @@ if(LIBZMQ_WERROR)
     zmq_check_cxx_flag_prepend("/WX")
   else()
     zmq_check_cxx_flag_prepend("-Werror")
-    if(NOT "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+    if(${CMAKE_CXX_COMPILER_ID} MATCHES "SunPro")
       zmq_check_cxx_flag_prepend("-errwarn=%all")
     endif()
   endif()
@@ -770,7 +795,7 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Darwin")
   add_definitions(-D_DARWIN_C_SOURCE)
 endif()
 
-find_package(AsciiDoc)
+find_package(AsciiDoctor)
 
 cmake_dependent_option(WITH_DOC "Build Reference Guide documentation(requires DocBook)" ON "ASCIIDOC_FOUND;NOT WIN32"
                        OFF) # Do not build docs on Windows due to issues with symlinks
@@ -1212,6 +1237,10 @@ if(ZMQ_HAVE_TIPC)
   list(APPEND cxx-sources tipc_address.cpp tipc_connecter.cpp tipc_listener.cpp)
 endif()
 
+if(WITH_GSSAPI_KRB5)
+  list(APPEND cxx-sources gssapi_client.cpp gssapi_mechanism_base.cpp gssapi_server.cpp)
+endif()
+
 # -----------------------------------------------------------------------------
 # source generators
 
@@ -1228,9 +1257,9 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/builds/cmake/platform.hpp.in ${CMAKE_
 list(APPEND sources ${CMAKE_CURRENT_BINARY_DIR}/platform.hpp)
 
 set(prefix ${CMAKE_INSTALL_PREFIX})
-set(exec_prefix ${prefix})
-set(libdir ${prefix}/${CMAKE_INSTALL_LIBDIR})
-set(includedir ${prefix}/${CMAKE_INSTALL_INCLUDEDIR})
+set(exec_prefix "\${prefix}")
+set(libdir "\${prefix}/${CMAKE_INSTALL_LIBDIR}")
+set(includedir "\${prefix}/${CMAKE_INSTALL_INCLUDEDIR}")
 set(VERSION ${ZMQ_VERSION_MAJOR}.${ZMQ_VERSION_MINOR}.${ZMQ_VERSION_PATCH})
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/libzmq.pc.in ${CMAKE_CURRENT_BINARY_DIR}/libzmq.pc @ONLY)
 set(zmq-pkgconfig ${CMAKE_CURRENT_BINARY_DIR}/libzmq.pc)
@@ -1256,25 +1285,16 @@ option(WITH_DOCS "Build html docs" ON)
 if(WITH_DOCS)
   file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/doc)
   file(
-    GLOB docs
+    GLOB asciidoc_files
     RELATIVE ${CMAKE_CURRENT_BINARY_DIR}/
-    "${CMAKE_CURRENT_SOURCE_DIR}/doc/*.txt")
-  set(html-docs)
-  foreach(txt ${docs})
-    string(REGEX REPLACE ".*/(.*)\\.txt" "\\1.html" html ${txt})
-    set(src ${txt})
-    set(dst doc/${html})
-    if(WITH_DOC)
-      add_custom_command(
-        OUTPUT ${dst}
-        COMMAND ${ASCIIDOC_EXECUTABLE} -d manpage -b xhtml11 -f ${CMAKE_CURRENT_SOURCE_DIR}/doc/asciidoc.conf
-                -azmq_version=${ZMQ_VERSION} -o ${dst} ${src}
-        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${src}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-        COMMENT "Generating ${html}")
-      list(APPEND html-docs ${CMAKE_CURRENT_BINARY_DIR}/${dst})
-    endif()
-  endforeach()
+    "${CMAKE_CURRENT_SOURCE_DIR}/doc/*.adoc")
+  string(REPLACE ".txt" ".html" html_files ${asciidoc_files})
+  add_custom_command(
+    OUTPUT ${html_files}
+    COMMAND asciidoctor -b html -azmq_version=${ZMQ_VERSION} *.adoc
+    DEPENDS ${asciidoc_files}
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    COMMENT "Generating ${html}")
 endif()
 
 if(ZMQ_BUILD_FRAMEWORK)
@@ -1402,7 +1422,7 @@ else()
     # NOTE: the SOVERSION and VERSION MUST be the same as the one generated by libtool! It is NOT the same as the
     # version of the package.
     set_target_properties(
-      libzmq PROPERTIES COMPILE_DEFINITIONS "DLL_EXPORT" PUBLIC_HEADER "${public_headers}" VERSION "5.2.5"
+      libzmq PROPERTIES COMPILE_DEFINITIONS "DLL_EXPORT" PUBLIC_HEADER "${public_headers}" VERSION "5.2.6"
                         SOVERSION "5" OUTPUT_NAME "${ZMQ_OUTPUT_BASENAME}" PREFIX "lib")
     if(ZMQ_BUILD_FRAMEWORK)
       set_target_properties(
@@ -1494,6 +1514,10 @@ if(BUILD_SHARED)
     endif()
   endif()
 
+  if(WITH_GSSAPI_KRB5)
+    target_link_libraries(libzmq ${GSSAPI_KRB5_LIBRARIES})
+  endif()
+
   if(HAVE_WS2_32)
     target_link_libraries(libzmq ws2_32)
   elseif(HAVE_WS2)
@@ -1542,6 +1566,10 @@ if(BUILD_STATIC)
     if(${CMAKE_SYSTEM_NAME} MATCHES "SunOS")
       target_link_libraries(libzmq-static ssp)
     endif()
+  endif()
+
+  if(WITH_GSSAPI_KRB5)
+    target_link_libraries(libzmq-static ${GSSAPI_KRB5_LIBRARIES})
   endif()
 
   if(HAVE_WS2_32)
@@ -1611,6 +1639,10 @@ if(BUILD_SHARED)
 
       if(SODIUM_FOUND)
         target_link_libraries(${perf-tool} ${SODIUM_LIBRARIES})
+      endif()
+
+      if(WITH_GSSAPI_KRB5)
+        target_link_libraries(${perf-tool} ${GSSAPI_KRB5_LIBRARIES})
       endif()
 
       if(ZMQ_BUILD_FRAMEWORK)
@@ -1724,7 +1756,7 @@ if(WITH_DOC)
   endif()
 endif()
 
-if(WIN32)
+if(WIN32 AND NOT MINGW)
   set(ZEROMQ_CMAKECONFIG_INSTALL_DIR
       "CMake"
       CACHE STRING "install path for ZeroMQConfig.cmake")
@@ -1883,3 +1915,37 @@ if(ENABLE_NO_EXPORT)
   message(STATUS "Building with empty ZMQ_EXPORT macro")
   add_definitions(-DZMQ_NO_EXPORT)
 endif()
+
+if (ENABLE_CURVE)
+  add_executable(curve_keygen tools/curve_keygen.cpp)
+  target_link_libraries(curve_keygen libzmq)
+  install(TARGETS curve_keygen RUNTIME DESTINATION bin)
+endif()
+
+# CPack configuration for Debian/Ubuntu packaging
+set(CPACK_GENERATOR "DEB")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Effective Range LLD <info@effective-range.com>")
+set(CPACK_DEBIAN_PACKAGE_DESCRIPTION "ZeroMQ core engine library")
+set(CPACK_DEBIAN_PACKAGE_SECTION "libs")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.17)")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+set(CPACK_DEBIAN_ARCHITECTURE ${CMAKE_SYSTEM_PROCESSOR})
+if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch32")
+  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "armhf")
+else()
+  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+set(CPACK_PACKAGE_VERSION ${ZMQ_VERSION})
+set(CPACK_PACKAGE_VERSION_MAJOR ${ZMQ_VERSION_MAJOR})
+set(CPACK_PACKAGE_VERSION_MINOR ${ZMQ_VERSION_MINOR})
+set(CPACK_PACKAGE_VERSION_PATCH ${ZMQ_VERSION_PATCH})
+set(CPACK_PACKAGE_CONTACT "Effective Range LLD <info@effective-range.com>")
+set(CPACK_PACKAGE_NAME "libzmq")
+set(CPACK_PACKAGE_VENDOR "Effective Range LLD")
+set(CPACK_PACKAGE_FILE_NAME "libzmq_${ZMQ_VERSION_MAJOR}.${ZMQ_VERSION_MINOR}.${ZMQ_VERSION_PATCH}-1_${CPACK_DEBIAN_PACKAGE_ARCHITECTURE}")
+
+include(CPack)
