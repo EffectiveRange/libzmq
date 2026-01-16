@@ -52,9 +52,9 @@ jobs:
             
             cpack .
             
-            for pkg in $(find ${DIST_DIR} -maxdepth 1 -name "*.deb")
+            for package in $(find ${DIST_DIR} -maxdepth 1 -name "*.deb")
             do
-              mv -vf "$pkg" "${DIST_DIR}/${{ matrix.distribution }}_$(basename "$pkg")"
+              mv -vf $package ${DIST_DIR}/${{ matrix.distribution }}_$(basename $package)
             done
 
       - name: Release
