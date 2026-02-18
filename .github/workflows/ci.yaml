@@ -2,11 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches: [ release_v4.3.5_drafts ]
     tags: [ v*.*.* ]
 
   pull_request:
-    branches: [ master ]
+    branches: [ release_v4.3.5_drafts ]
     types:
       - synchronize
       - opened
